@@ -18,6 +18,7 @@ import (
 	"github.com/gomessguii/logger"
 	"github.com/joho/godotenv"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/store"
 	"gorm.io/gorm"
 	_ "modernc.org/sqlite"
 
@@ -326,6 +327,39 @@ func initPostgresAuthDB(config *config.Config) (*sql.DB, error) {
 	return db, nil
 }
 
+// syncWAVersion aligns the advertised WhatsApp Web client version with the one
+// WhatsApp currently accepts.
+//
+// whatsmeow compiles in a fixed client version. WhatsApp retires old ones, and
+// from then on every connect is refused with "Client outdated (405)" — which
+// drops all instances at once while their sessions are still perfectly valid, so
+// it looks like a mass logout. On 2026-11-02 the pinned 2.3000.1042386815 was
+// retired and all 13 instances went down together.
+//
+// Fetching the live version at startup survives the next retirement without
+// bumping the dependency. A failure here is not fatal: the compiled-in version
+// is kept, since the network may not be ready yet at boot.
+func syncWAVersion() {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	current := store.GetWAVersion()
+
+	latest, err := whatsmeow.GetLatestVersion(ctx, &http.Client{Timeout: 15 * time.Second})
+	if err != nil {
+		logger.LogWarn("Could not fetch the current WhatsApp Web version, keeping %s: %v", current, err)
+		return
+	}
+
+	if *latest == current {
+		logger.LogInfo("WhatsApp Web client version %s is current", current)
+		return
+	}
+
+	store.SetWAVersion(*latest)
+	logger.LogInfo("WhatsApp Web client version updated: %s -> %s", current, latest)
+}
+
 // @title Evolution GO
 // @version 1.0
 // @description Evolution GO - whatsmeow
@@ -341,6 +375,8 @@ func main() {
 	cfg := config.Load()
 
 	logger.LogInfo("Starting Evolution GO version %s", version)
+
+	syncWAVersion()
 
 	startTime := time.Now()
 
